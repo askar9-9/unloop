@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Unloop</string>
+    <string name="service_label">Unloop — защита от коротких видео</string>
+    <string name="service_description">По вашему выбору Unloop распознаёт кнопки Reels и Shorts в Instagram и YouTube, закрывает их накладками и возвращает назад при перелистывании роликов. Сервис получает доступ к структуре экрана этих приложений. Содержимое экрана и переписка не сохраняются и не передаются. Защиту можно отключить в Unloop или в настройках Android.</string>
+</resources>
