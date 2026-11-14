@@ -58,5 +58,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          # A release published from a local build keeps its APK: the CI debug key differs and would force a reinstall.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; keeping its APK."
+            exit 0
+          fi
           gh release create "$RELEASE_TAG" dist/Unloop.apk dist/SHA256SUMS \
             --title "Unloop $RELEASE_TAG" --notes-file RELEASE_NOTES.md
