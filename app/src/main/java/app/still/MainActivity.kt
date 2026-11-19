@@ -2,7 +2,10 @@ package app.still
 
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ActivityNotFoundException
+import android.content.ComponentName
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
@@ -12,13 +15,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -49,6 +52,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.still.data.ProtectionSettings
 import app.still.data.UsageReport
+import app.still.protection.FocusService
 import app.still.protection.LiveStatus
 import app.still.protection.ProtectionStatus
 import app.still.ui.AppRow
@@ -63,7 +67,6 @@ import app.still.ui.PrimaryButton
 import app.still.ui.ProtectionState
 import app.still.ui.QuietList
 import app.still.ui.ScreenTitle
-import app.still.ui.SecondaryButton
 import app.still.ui.StatCard
 import app.still.ui.StatusBanner
 import app.still.ui.Steps
@@ -80,26 +83,42 @@ import java.time.LocalDate
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+private class Device(
+    val serviceEnabled: () -> Boolean,
+    val openSettings: (String) -> Unit,
+    val openAccessibility: () -> Unit,
+    val openAppInfo: () -> Unit,
+)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            UnloopTheme {
-                UnloopScreen(openSettings = ::openSettings, serviceEnabled = ::serviceEnabled)
-            }
-        }
+        val device = Device(::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo)
+        setContent { UnloopTheme { UnloopScreen(device) } }
     }
+
+    private val service get() = ComponentName(this, FocusService::class.java)
+
     private fun serviceEnabled(): Boolean = getSystemService(AccessibilityManager::class.java)
         .getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        .any { it.resolveInfo.serviceInfo.let { service -> service.packageName == packageName && service.name == "app.still.protection.FocusService" } }
+        .any { it.resolveInfo.serviceInfo.let { info -> ComponentName(info.packageName, info.name) == service } }
 
-    private fun openSettings(action: String) {
-        try { startActivity(Intent(action)) }
-        catch (_: ActivityNotFoundException) {
-            try { startActivity(Intent(Settings.ACTION_SETTINGS)) }
-            catch (_: ActivityNotFoundException) { Toast.makeText(this, "Откройте настройки Android вручную", Toast.LENGTH_LONG).show() }
+    private fun openAccessibility() {
+        val name = service.flattenToString()
+        // The direct details screen needs a system-only permission, so open the list; these extras highlight the Unloop row where supported.
+        open(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .putExtra(":settings:fragment_args_key", name)
+            .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", name) }))
+    }
+
+    private fun openAppInfo() = open(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
+
+    private fun open(vararg intents: Intent) {
+        for (intent in listOf(*intents, Intent(Settings.ACTION_SETTINGS))) {
+            try { startActivity(intent); return } catch (_: ActivityNotFoundException) {} catch (_: SecurityException) {}
         }
+        Toast.makeText(this, "Откройте настройки Android вручную", Toast.LENGTH_LONG).show()
     }
 }
 
@@ -110,9 +129,12 @@ private val tabs = listOf(
 )
 private const val PROTECTION_TAB = 1
 
+private enum class SetupStep { Consent, Enable, Unblock, EnableAgain, Reconnect }
+private enum class Opened { None, Accessibility, AppInfo }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> Boolean, model: MainViewModel = viewModel()) {
+private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
     val settings by model.settings.collectAsStateWithLifecycle()
     val report by model.report.collectAsStateWithLifecycle()
     val loading by model.loading.collectAsStateWithLifecycle()
@@ -121,6 +143,7 @@ private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> B
     val message by model.message.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var enabled by remember { mutableStateOf(false) }
+    var opened by rememberSaveable { mutableStateOf(Opened.None) }
     var disclosure by rememberSaveable { mutableStateOf(false) }
     var deleteDialog by rememberSaveable { mutableStateOf(false) }
     var settingsSheet by rememberSaveable { mutableStateOf(false) }
@@ -129,9 +152,10 @@ private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> B
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val snackbar = remember { SnackbarHostState() }
     val c = Unloop.colors
+    // Restarts on every return from Settings, so the setup card moves to the next step right away.
     LaunchedEffect(lifecycle) {
         lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            while (true) { enabled = serviceEnabled(); model.refresh(); delay(30_000) }
+            while (true) { enabled = device.serviceEnabled(); model.refresh(); delay(30_000) }
         }
     }
     LaunchedEffect(message) {
@@ -142,6 +166,19 @@ private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> B
         settings.consent && enabled && live.connected -> ProtectionState.On
         else -> ProtectionState.Setup
     }
+    val step = when {
+        !settings.consent -> SetupStep.Consent
+        enabled -> SetupStep.Reconnect
+        // Android 13+ blocks accessibility for sideloaded APKs ("restricted settings") and apps can't read that state.
+        // Coming back from Accessibility with the service still off is the sign; the ⋮ unlock item only appears after that attempt.
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU -> SetupStep.Enable
+        opened == Opened.Accessibility -> SetupStep.Unblock
+        opened == Opened.AppInfo -> SetupStep.EnableAgain
+        else -> SetupStep.Enable
+    }
+    val openAccessibility = { opened = Opened.Accessibility; device.openAccessibility() }
+    val openAppInfo = { opened = Opened.AppInfo; device.openAppInfo() }
+    val continueSetup = { if (step == SetupStep.Unblock) openAppInfo() else openAccessibility() }
     Scaffold(
         containerColor = c.bg,
         snackbarHost = { SnackbarHost(snackbar) },
@@ -158,29 +195,32 @@ private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> B
             TopBar(onSettings = { settingsSheet = true })
             when (tab) {
                 0 -> Today(report, loading, interruptions, state, settings, openProtection = { tab = PROTECTION_TAB },
-                    refresh = model::refresh, usageSettings = { openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS) })
-                1 -> Protection(settings, enabled, live, state, model, connect = { disclosure = true })
-                2 -> Grayscale(openSettings)
+                    usageSettings = { device.openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS) })
+                1 -> Protection(settings, state, step, model,
+                    next = { if (step == SetupStep.Consent) disclosure = true else continueSetup() }, other = openAccessibility)
+                2 -> Grayscale(device.openSettings)
             }
             Spacer(Modifier.height(padding.calculateBottomPadding()))
         }
     }
     if (settingsSheet) ModalBottomSheet(onDismissRequest = { settingsSheet = false }, containerColor = c.surface, contentColor = c.ink) {
-        SettingsSheet(enabled, live, delete = { settingsSheet = false; deleteDialog = true })
+        SettingsSheet(enabled, live, settings.consent,
+            withdraw = { model.withdrawConsent(); settingsSheet = false },
+            delete = { settingsSheet = false; deleteDialog = true })
     }
     if (disclosure) AlertDialog(
         onDismissRequest = { disclosure = false }, containerColor = c.surface, shape = RoundedCornerShape(28.dp),
         titleContentColor = c.ink, textContentColor = c.ink2,
-        title = { Text("Доступ к интерфейсу приложений", style = UnloopType.headline) },
-        text = { Text("Unloop использует специальные возможности Android, чтобы читать структуру экрана Instagram и YouTube, находить кнопки Reels и Shorts, закрывать их накладками и возвращать назад при перелистывании.\n\nСодержимое экранов, роликов и переписка не сохраняются и не передаются. Сохраняются только приложение и время прерывания.\n\nДоступ можно отозвать в Unloop или в настройках Android. После согласия включите сервис «Unloop» в системных настройках.", style = UnloopType.body) },
-        confirmButton = { TextAction("Согласен, открыть настройки", onClick = { model.consent { disclosure = false; openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) } }) },
+        title = { Text("Доступ к экрану", style = UnloopType.headline) },
+        text = { Text("Unloop читает структуру экрана Instagram и YouTube, чтобы закрывать кнопки Reels и Shorts и выводить из ленты роликов.\n\nНичего не сохраняется и не передаётся. Согласие можно отозвать в настройках Unloop.", style = UnloopType.body) },
+        confirmButton = { TextAction("Согласен", onClick = { model.consent { disclosure = false; continueSetup() } }) },
         dismissButton = { TextAction("Отмена", onClick = { disclosure = false }) },
     )
     if (deleteDialog) AlertDialog(
         onDismissRequest = { deleteDialog = false }, containerColor = c.surface, shape = RoundedCornerShape(28.dp),
         titleContentColor = c.ink, textContentColor = c.ink2,
-        title = { Text("Удалить историю Unloop?", style = UnloopType.headline) },
-        text = { Text("Будут удалены локальные записи о прерываниях. Настройки защиты сохранятся. Системная история экранного времени Android не изменится.", style = UnloopType.body) },
+        title = { Text("Удалить историю?", style = UnloopType.headline) },
+        text = { Text("Записи о прерываниях будут удалены. Настройки останутся.", style = UnloopType.body) },
         confirmButton = { TextAction("Удалить", danger = true, onClick = { model.clearHistory(); deleteDialog = false }) },
         dismissButton = { TextAction("Отмена", onClick = { deleteDialog = false }) },
     )
@@ -189,10 +229,10 @@ private fun UnloopScreen(openSettings: (String) -> Unit, serviceEnabled: () -> B
 @Composable
 private fun Today(
     report: UsageReport?, loading: Boolean, interruptions: Int, state: ProtectionState, settings: ProtectionSettings,
-    openProtection: () -> Unit, refresh: () -> Unit, usageSettings: () -> Unit,
+    openProtection: () -> Unit, usageSettings: () -> Unit,
 ) {
     val c = Unloop.colors
-    ScreenTitle("Меньше скролла.\nБольше жизни.", "Небольшая пауза вместо ещё одного ролика.")
+    ScreenTitle("Сегодня")
     val protectedApps = listOfNotNull("Instagram".takeIf { settings.instagram }, "YouTube".takeIf { settings.youtube }).joinToString(", ")
     StatusBanner(
         state,
@@ -203,101 +243,66 @@ private fun Today(
     val today = report?.days?.find { it.date == LocalDate.now() }
     StatCard(
         minutes = if (granted && today != null) today.totalMs / 60_000 else null,
-        meta = "$interruptions ${plural(interruptions, "прерывание", "прерывания", "прерываний")} ленты сегодня",
+        meta = "$interruptions ${plural(interruptions, "прерывание", "прерывания", "прерываний")}",
     )
     if (report == null || loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = c.ink2, trackColor = c.surfaceRaised)
     if (report != null && !report.granted) Panel {
-        Text("Познакомьтесь со своими привычками", style = UnloopType.bodyStrong, color = c.ink)
-        Text("Разрешите доступ к статистике использования, чтобы видеть время по приложениям. Защита работает и без него.", style = UnloopType.body, color = c.ink2)
-        PrimaryButton("Разрешить статистику", onClick = usageSettings, small = true)
+        Text("Нет доступа к статистике", style = UnloopType.bodyStrong, color = c.ink)
+        PrimaryButton("Разрешить", onClick = usageSettings, small = true)
     }
     report?.error?.let { Panel { Text(it, style = UnloopType.body, color = c.ink2) } }
     if (report != null && granted) {
-        Panel {
-            Text("Эта неделя", style = UnloopType.bodyStrong, color = c.ink)
-            if (report.days.isEmpty()) Text("История пока недоступна", style = UnloopType.body, color = c.ink2) else WeekChart(report.days)
-            Text("Время активности приложений, пока экран включён. Android может хранить неполную историю; цифры могут отличаться от «Цифрового благополучия».", style = UnloopType.caption, color = c.ink3)
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Сегодня по приложениям", style = UnloopType.headline, color = c.ink)
-            val apps = today?.apps.orEmpty().entries.sortedByDescending { it.value }.take(8)
-            if (apps.isEmpty()) Text("За сегодня пока нет данных", style = UnloopType.body, color = c.ink2)
-            else QuietList(apps.map { (pkg, time) -> (report.labels[pkg] ?: pkg) to duration(time) })
-        }
+        if (report.days.isNotEmpty()) Panel { WeekChart(report.days) }
+        val apps = today?.apps.orEmpty().entries.sortedByDescending { it.value }.take(8)
+        if (apps.isNotEmpty()) QuietList(apps.map { (pkg, time) -> (report.labels[pkg] ?: pkg) to duration(time) })
     }
-    if (state != ProtectionState.On) SecondaryButton("Настроить защиту ленты", onClick = openProtection, modifier = Modifier.fillMaxWidth())
-    TextAction("Обновить данные", onClick = refresh, enabled = !loading, modifier = Modifier.fillMaxWidth().wrapContentWidth(Alignment.End))
-    Text("На вашем устройстве. В вашем темпе.", style = UnloopType.caption, color = c.ink3)
 }
 
 @Composable
-private fun Protection(settings: ProtectionSettings, enabled: Boolean, live: LiveStatus, state: ProtectionState, model: MainViewModel, connect: () -> Unit) {
+private fun Protection(
+    settings: ProtectionSettings, state: ProtectionState, step: SetupStep,
+    model: MainViewModel, next: () -> Unit, other: () -> Unit,
+) {
     val c = Unloop.colors
-    ScreenTitle("Вы решаете,\nчто смотреть.", "Полезные функции остаются доступны.")
-    StatusBanner(state)
+    ScreenTitle("Защита")
     if (state == ProtectionState.Setup) Panel {
-        Text(when {
-            !settings.consent -> "Нужно ваше согласие на работу с интерфейсом Instagram и YouTube."
-            !enabled -> "Включите Unloop в специальных возможностях Android. Для APK Android может сначала потребовать разрешить ограниченные настройки в сведениях о приложении."
-            else -> "Android ещё не подключил сервис. Проверьте его состояние в специальных возможностях."
-        }, style = UnloopType.body, color = c.ink2)
-        PrimaryButton("Подключить защиту", onClick = connect, small = true)
-    }
-    if (state == ProtectionState.On) Text(
-        "Совместимость экспериментальная. Включённый сервис ещё не означает, что кнопки распознаны в вашей версии приложения.",
-        style = UnloopType.caption, color = c.ink3,
-    )
-    CardList { AppRow("Защита ленты", "Общий переключатель", settings.enabled, model::enable) }
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("Приложения", style = UnloopType.headline, color = c.ink)
-        CardList {
-            val instagram = settings.enabled && settings.instagram
-            AppRow(
-                "Instagram", if (instagram) "Reels под контролем" else "Reels без защиты", settings.instagram, model::instagram,
-                tile = "Ig", enabled = settings.enabled,
-                checks = if (instagram) listOf("Кнопка Reels закрывается накладкой", "Выход при перелистывании") else emptyList(),
-                note = if (instagram) "Переписка остаётся доступной" else null,
-            )
-            CardDivider()
-            val youtube = settings.enabled && settings.youtube
-            AppRow(
-                "YouTube", if (youtube) "Shorts под контролем" else "Shorts без защиты", settings.youtube, model::youtube,
-                tile = "Yt", enabled = settings.enabled,
-                checks = if (youtube) listOf("Кнопка Shorts закрывается накладкой", "Выход при перелистывании") else emptyList(),
-                note = if (youtube) "Обычные видео доступны" else null,
-            )
+        Text(when (step) {
+            SetupStep.Consent -> "Нужен доступ к спецвозможностям"
+            SetupStep.Enable -> "Включите Unloop в спецвозможностях"
+            SetupStep.Unblock -> "Android запретил доступ?"
+            SetupStep.EnableAgain -> "Теперь включите Unloop"
+            SetupStep.Reconnect -> "Сервис не отвечает"
+        }, style = UnloopType.bodyStrong, color = c.ink)
+        when (step) {
+            SetupStep.Unblock -> "В сведениях о приложении нажмите ⋮ вверху справа → «Разрешить ограниченные настройки»."
+            SetupStep.Reconnect -> "Выключите и снова включите Unloop."
+            else -> null
+        }?.let { Text(it, style = UnloopType.body, color = c.ink2) }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            PrimaryButton(when (step) { SetupStep.Consent -> "Подключить"; SetupStep.Unblock -> "О приложении"; else -> "Открыть" }, onClick = next, small = true)
+            if (step == SetupStep.Unblock) TextAction("Спецвозможности", onClick = other)
         }
+    } else StatusBanner(state)
+    CardList { AppRow("Защита ленты", null, settings.enabled, model::enable) }
+    CardList {
+        AppRow("Instagram", "Reels", settings.instagram, model::instagram, tile = "Ig", enabled = settings.enabled)
+        CardDivider()
+        AppRow("YouTube", "Shorts", settings.youtube, model::youtube, tile = "Yt", enabled = settings.enabled)
     }
-    Notice("Один ролик по ссылке можно посмотреть. Свайп к следующему — пауза.")
-    Panel {
-        Text("Как это работает", style = UnloopType.bodyStrong, color = c.ink)
-        Text("Распознанные кнопки Reels и Shorts закрываются нейтральной маской. Ролик по прямой ссылке можно посмотреть, после первого перелистывания Unloop возвращает назад. Переписка, обычные видео и комментарии остаются доступны.", style = UnloopType.body, color = c.ink2)
-        Text("Следующий ролик может на мгновение появиться. Защита активируется через 0,7 с после распознавания плеера; быстрый свайп при входе может быть пропущен. Автовоспроизведение, неизвестные версии интерфейса и браузер не гарантированно поддерживаются.", style = UnloopType.caption, color = c.ink3)
-    }
-    if (settings.consent) TextAction("Отозвать согласие и остановить защиту", onClick = model::withdrawConsent)
+    Notice("Один ролик по ссылке можно. Следующий — пауза.")
 }
 
 @Composable
 private fun Grayscale(openSettings: (String) -> Unit) {
-    val c = Unloop.colors
-    ScreenTitle("Приглушите\nлишнее.", "Меньше цвета, спокойнее экран.")
+    ScreenTitle("Оттенки серого")
     Panel { GrayscalePreview() }
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Чёрно-белый режим", style = UnloopType.headline, color = c.ink)
-        Text("Включается в системных настройках Android. Unloop не меняет цвет экрана сам.", style = UnloopType.body, color = c.ink2)
-    }
-    Steps(listOf("Откройте «Цифровое благополучие»", "Выберите «Режим сна»", "Включите «Оттенки серого»"))
+    Steps(listOf("Цифровое благополучие", "Режим сна", "Оттенки серого"))
     PrimaryButton("Открыть настройки", onClick = { openSettings(Settings.ACTION_SETTINGS) }, modifier = Modifier.fillMaxWidth())
-    Text("Названия пунктов зависят от телефона. На некоторых моделях оттенки серого находятся в «Специальные возможности» → «Коррекция цвета».", style = UnloopType.caption, color = c.ink3)
-    SecondaryButton("Специальные возможности", onClick = { openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) }, modifier = Modifier.fillMaxWidth())
-    Panel {
-        Text("Попробуйте вечером", style = UnloopType.bodyStrong, color = c.ink)
-        Text("Если телефон поддерживает расписание режима сна, задайте там время включения оттенков серого. Лента станет менее яркой; эффект индивидуален.", style = UnloopType.body, color = c.ink2)
-    }
+    TextAction("Специальные возможности", onClick = { openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) }, modifier = Modifier.fillMaxWidth())
 }
 
 @Composable
-private fun SettingsSheet(enabled: Boolean, live: LiveStatus, delete: () -> Unit) {
+private fun SettingsSheet(enabled: Boolean, live: LiveStatus, consent: Boolean, withdraw: () -> Unit, delete: () -> Unit) {
     val c = Unloop.colors
     Column(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
@@ -305,14 +310,16 @@ private fun SettingsSheet(enabled: Boolean, live: LiveStatus, delete: () -> Unit
     ) {
         Text("Настройки", style = UnloopType.headline, color = c.ink)
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Проверка распознавания", style = UnloopType.bodyStrong, color = c.ink)
             Text(if (!enabled) "Сервис выключен" else live.note, style = UnloopType.body, color = c.ink2)
             Text(
-                "Последний активный экран: ${live.packageName ?: "—"}\nМасок: ${live.masks} · Плеер: ${if (live.viewer) "распознан" else "не распознан"}",
+                "Экран: ${live.packageName ?: "—"} · Масок: ${live.masks} · Плеер: ${if (live.viewer) "да" else "нет"}",
                 style = UnloopType.caption, color = c.ink3,
             )
         }
-        Text("Структура экранов и переписка не сохраняются. Записи о прерываниях старше 30 дней очищаются при запуске сервиса и новых прерываниях.", style = UnloopType.caption, color = c.ink3)
-        TextAction("Удалить локальную историю", onClick = delete, danger = true)
+        Text("Данные хранятся только на телефоне.", style = UnloopType.caption, color = c.ink3)
+        Column {
+            if (consent) TextAction("Отозвать согласие", onClick = withdraw)
+            TextAction("Удалить историю", onClick = delete, danger = true)
+        }
     }
 }

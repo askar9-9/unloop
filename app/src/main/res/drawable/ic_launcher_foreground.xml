@@ -1,0 +1,6 @@
+<!-- A loop with a gap and a dot leaving through it. Kept inside the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:strokeColor="#F3F3F3" android:strokeWidth="8" android:strokeLineCap="round"
+        android:pathData="M67.64,54.15A17,17 0 1,1 53.85,40.36" />
+    <path android:fillColor="#F3F3F3" android:pathData="M66.11,35.89a6,6 0 1,0 12,0a6,6 0 1,0 -12,0z" />
+</vector>

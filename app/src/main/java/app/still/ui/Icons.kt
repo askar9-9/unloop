@@ -10,7 +10,7 @@ import androidx.compose.ui.unit.dp
 
 object UnloopIcons {
     val Day = icon("Day", "M3 18.5H21", "M7 18.5A5 5 0 0 1 17 18.5", "M12 6V8.5", "M5.6 9.6L7.4 11.4", "M18.4 9.6L16.6 11.4")
-    val LoopBreak = icon("LoopBreak", "M16.82 6.25A7.5 7.5 0 1 1 9.43 4.95", "M15.54 7.79L18.11 4.72")
+    val LoopBreak = icon("LoopBreak", "M17.75 11.52A6.5 6.5 0 1 1 12.48 6.25", filled = listOf("M16.82 5.58a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0z"))
     val Tone = icon("Tone", "M12 3.5C15 7.1 17.5 10.4 17.5 13.5A5.5 5.5 0 0 1 6.5 13.5C6.5 10.4 9 7.1 12 3.5Z", "M4.5 19.5L19.5 4.5")
     val Settings = icon(
         "Settings",
@@ -22,7 +22,6 @@ object UnloopIcons {
         circle(12f, 12f, 3f),
     )
     val Info = icon("Info", circle(12f, 12f, 9f), "M12 11V16.5", filled = listOf(circle(12f, 7.75f, 0.9f)))
-    val Check = icon("Check", "M5 12.5L9.5 17L19 7.5")
 
     private fun circle(cx: Float, cy: Float, r: Float) = "M${cx - r} ${cy}A$r $r 0 1 0 ${cx + r} ${cy}A$r $r 0 1 0 ${cx - r} ${cy}Z"
 

@@ -1,6 +1,5 @@
 package app.still.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,7 +30,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -77,20 +75,14 @@ fun TopBar(onSettings: () -> Unit) {
 }
 
 @Composable
-fun ScreenTitle(title: String, subtitle: String) {
-    val c = Unloop.colors
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(title, style = UnloopType.title, color = c.ink)
-        Text(subtitle, style = UnloopType.subtitle, color = c.ink2)
-    }
-}
+fun ScreenTitle(title: String) = Text(title, style = UnloopType.title, color = Unloop.colors.ink)
 
 @Composable
 fun StatusBanner(state: ProtectionState, detail: String? = null, onClick: (() -> Unit)? = null) {
     val c = Unloop.colors
     val bg = when (state) { ProtectionState.On -> c.accentSoft; ProtectionState.Setup -> c.warnSoft; ProtectionState.Off -> c.surface }
     val fg = when (state) { ProtectionState.On -> c.accent; ProtectionState.Setup -> c.warn; ProtectionState.Off -> c.ink2 }
-    val text = when (state) { ProtectionState.On -> "Защита включена"; ProtectionState.Setup -> "Защита требует настройки"; ProtectionState.Off -> "Защита выключена" }
+    val text = when (state) { ProtectionState.On -> "Защита включена"; ProtectionState.Setup -> "Нужна настройка"; ProtectionState.Off -> "Защита выключена" }
     val icon = if (state == ProtectionState.Setup) UnloopIcons.Info else UnloopIcons.LoopBreak
     val shape = RoundedCornerShape(16.dp)
     Row(
@@ -137,7 +129,7 @@ fun StatCard(minutes: Long?, meta: String) {
         Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(c.surface).padding(24.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("ЭКРАННОЕ ВРЕМЯ · СЕГОДНЯ", style = UnloopType.label, color = c.ink2)
+        Text("ЭКРАННОЕ ВРЕМЯ", style = UnloopType.label, color = c.ink2)
         Text(value, style = UnloopType.number, color = c.ink, maxLines = 1, softWrap = false)
         Text(meta, style = UnloopType.body, color = c.ink2)
     }
@@ -204,38 +196,25 @@ fun UnloopSwitch(checked: Boolean, enabled: Boolean = true) {
 
 @Composable
 fun AppRow(
-    name: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit,
-    tile: String? = null, enabled: Boolean = true, checks: List<String> = emptyList(), note: String? = null,
+    name: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit,
+    tile: String? = null, enabled: Boolean = true,
 ) {
     val c = Unloop.colors
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-            Modifier.fillMaxWidth().toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange),
-            horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (tile != null) {
-                Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceRaised), contentAlignment = Alignment.Center) {
-                    Text(tile, style = UnloopType.bodyStrong, color = c.ink)
-                }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(name, style = UnloopType.bodyStrong, color = c.ink)
-                Text(subtitle, style = UnloopType.caption, color = c.ink2)
-            }
-            UnloopSwitch(checked, enabled)
-        }
-        val indent = if (tile != null) 52.dp else 0.dp
-        if (checks.isNotEmpty()) {
-            Column(Modifier.padding(start = indent), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                checks.forEach {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(UnloopIcons.Check, contentDescription = null, tint = c.accent, modifier = Modifier.size(16.dp))
-                        Text(it, style = UnloopType.body, color = c.ink)
-                    }
-                }
+    Row(
+        Modifier.fillMaxWidth().toggleable(value = checked, enabled = enabled, role = Role.Switch, onValueChange = onChange)
+            .padding(horizontal = 20.dp, vertical = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (tile != null) {
+            Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceRaised), contentAlignment = Alignment.Center) {
+                Text(tile, style = UnloopType.bodyStrong, color = c.ink)
             }
         }
-        note?.let { Text(it, style = UnloopType.caption, color = c.ink3, modifier = Modifier.padding(start = indent)) }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(name, style = UnloopType.bodyStrong, color = c.ink)
+            subtitle?.let { Text(it, style = UnloopType.caption, color = c.ink2) }
+        }
+        UnloopSwitch(checked, enabled)
     }
 }
 
@@ -304,17 +283,6 @@ fun PrimaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifi
         colors = ButtonDefaults.buttonColors(containerColor = c.primary, contentColor = c.onPrimary),
         contentPadding = PaddingValues(horizontal = if (small) 16.dp else 24.dp),
     ) { Text(text, style = if (small) UnloopType.button.copy(fontSize = 13.sp) else UnloopType.button) }
-}
-
-@Composable
-fun SecondaryButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = Unloop.colors
-    OutlinedButton(
-        onClick = onClick, modifier = modifier.heightIn(min = 54.dp), shape = CircleShape,
-        border = BorderStroke(1.dp, c.lineStrong),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = c.ink),
-        contentPadding = PaddingValues(horizontal = 24.dp),
-    ) { Text(text, style = UnloopType.button) }
 }
 
 @Composable
