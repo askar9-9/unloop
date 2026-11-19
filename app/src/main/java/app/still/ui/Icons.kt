@@ -9,9 +9,13 @@ import androidx.compose.ui.graphics.vector.addPathNodes
 import androidx.compose.ui.unit.dp
 
 object UnloopIcons {
-    val Day = icon("Day", "M3 18.5H21", "M7 18.5A5 5 0 0 1 17 18.5", "M12 6V8.5", "M5.6 9.6L7.4 11.4", "M18.4 9.6L16.6 11.4")
-    val LoopBreak = icon("LoopBreak", "M17.75 11.52A6.5 6.5 0 1 1 12.48 6.25", filled = listOf("M16.82 5.58a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0 -3.2 0z"))
-    val Tone = icon("Tone", "M12 3.5C15 7.1 17.5 10.4 17.5 13.5A5.5 5.5 0 0 1 6.5 13.5C6.5 10.4 9 7.1 12 3.5Z", "M4.5 19.5L19.5 4.5")
+    // Bottom bar: outline when idle, bolder with a filled detail when selected.
+    val Pulse = icon("Pulse", PULSE)
+    val PulseActive = icon("PulseActive", PULSE, width = 2.5f)
+    val EyeActive = icon("EyeActive", EYE, width = 2.5f, filled = listOf(circle(12f, 12f, 3.4f)))
+    val Eye = icon("Eye", EYE, circle(12f, 12f, 3f))
+    val LoopBreak = icon("LoopBreak", LOOP, filled = listOf(circle(18.42f, 5.58f, 1.6f)))
+    val LoopBreakActive = icon("LoopBreakActive", LOOP, width = 2.5f, filled = listOf(circle(18.42f, 5.58f, 2.1f)))
     val Settings = icon(
         "Settings",
         "M18.92 10.02L21.48 10.50L21.48 13.50L18.92 13.98A7.2 7.2 0 0 1 18.30 15.49L19.77 17.64L17.64 19.77L15.49 18.30" +
@@ -25,13 +29,17 @@ object UnloopIcons {
     val Forward = icon("Forward", "M9.5 6L15.5 12L9.5 18")
     val Info = icon("Info", circle(12f, 12f, 9f), "M12 11V16.5", filled = listOf(circle(12f, 7.75f, 0.9f)))
 
+    private const val PULSE = "M3 12H7L9.5 6L14.5 18L17 12H21"
+    private const val LOOP = "M17.75 11.52A6.5 6.5 0 1 1 12.48 6.25"
+    private const val EYE = "M2.5 12C5 7.5 8.3 5.5 12 5.5S19 7.5 21.5 12C19 16.5 15.7 18.5 12 18.5S5 16.5 2.5 12Z"
+
     private fun circle(cx: Float, cy: Float, r: Float) = "M${cx - r} ${cy}A$r $r 0 1 0 ${cx + r} ${cy}A$r $r 0 1 0 ${cx - r} ${cy}Z"
 
-    private fun icon(name: String, vararg strokes: String, filled: List<String> = emptyList()): ImageVector =
+    private fun icon(name: String, vararg strokes: String, width: Float = 1.75f, filled: List<String> = emptyList()): ImageVector =
         ImageVector.Builder(name, 24.dp, 24.dp, 24f, 24f).apply {
             strokes.forEach {
                 addPath(
-                    addPathNodes(it), stroke = SolidColor(Color.Black), strokeLineWidth = 1.75f,
+                    addPathNodes(it), stroke = SolidColor(Color.Black), strokeLineWidth = width,
                     strokeLineCap = StrokeCap.Round, strokeLineJoin = StrokeJoin.Round,
                 )
             }

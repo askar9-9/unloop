@@ -103,15 +103,18 @@ private class Device(
     val openAccessibility: () -> Unit,
     val openAppInfo: () -> Unit,
     val openInstallSettings: () -> Unit,
+    val openWellbeing: () -> Unit,
 )
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val device = Device(::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo) {
-            open(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.fromParts("package", packageName, null)))
-        }
+        val device = Device(
+            ::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo,
+            openInstallSettings = { open(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.fromParts("package", packageName, null))) },
+            openWellbeing = ::openWellbeing,
+        )
         setContent { UnloopTheme { UnloopScreen(device) } }
     }
 
@@ -129,6 +132,12 @@ class MainActivity : ComponentActivity() {
             .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", name) }))
     }
 
+    /** Samsung's and Google's Digital Wellbeing; without either, Settings lists it at the top level. */
+    private fun openWellbeing() = open(
+        *listOf("com.samsung.android.forest", "com.google.android.apps.wellbeing")
+            .mapNotNull { packageManager.getLaunchIntentForPackage(it) }.toTypedArray(),
+    )
+
     private fun openAppInfo() = open(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", packageName, null)))
 
     private fun open(vararg intents: Intent) {
@@ -140,9 +149,9 @@ class MainActivity : ComponentActivity() {
 }
 
 private val tabs = listOf(
-    DockItem("Сегодня", UnloopIcons.Day),
-    DockItem("Защита", UnloopIcons.LoopBreak),
-    DockItem("Экран", UnloopIcons.Tone),
+    DockItem("Сегодня", UnloopIcons.Pulse, UnloopIcons.PulseActive),
+    DockItem("Защита", UnloopIcons.LoopBreak, UnloopIcons.LoopBreakActive),
+    DockItem("Экран", UnloopIcons.Eye, UnloopIcons.EyeActive),
 )
 private const val PROTECTION_TAB = 1
 
@@ -235,7 +244,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
                     usageSettings = { device.openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS) })
                 1 -> Protection(settings, state, step, model,
                     next = { if (step == SetupStep.Consent) disclosure = true else continueSetup() }, other = openAccessibility)
-                2 -> Grayscale(device.openSettings)
+                2 -> Grayscale(device.openSettings, device.openWellbeing)
             }
             Spacer(Modifier.height(padding.calculateBottomPadding()))
         }
@@ -387,12 +396,26 @@ private fun Protection(
 }
 
 @Composable
-private fun Grayscale(openSettings: (String) -> Unit) {
+private fun Grayscale(openSettings: (String) -> Unit, openWellbeing: () -> Unit) {
+    val c = Unloop.colors
     ScreenTitle("Оттенки серого")
     Panel { GrayscalePreview() }
-    Steps(listOf("Цифровое благополучие", "Режим сна", "Оттенки серого"))
-    PrimaryButton("Открыть настройки", onClick = { openSettings(Settings.ACTION_SETTINGS) }, modifier = Modifier.fillMaxWidth())
-    TextAction("Специальные возможности", onClick = { openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) }, modifier = Modifier.fillMaxWidth())
+    // Android lets no app switch grayscale on, so each way opens the screen where the switch lives.
+    GrayscaleWay("Включить сейчас", listOf("Специальные возможности", "Улучшение видимости", "Оттенки серого — включить")) {
+        openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+    }
+    // Opens Digital Wellbeing directly where it has its own screen, otherwise Settings, where it is a top-level item.
+    GrayscaleWay("Каждый вечер", listOf("Цифровое благополучие", "Режим сна", "Оттенки серого — включить"), openWellbeing)
+    Text("Нет такого пункта? Наберите «оттенки» в поиске настроек.", style = UnloopType.caption, color = c.ink3)
+}
+
+@Composable
+private fun GrayscaleWay(title: String, steps: List<String>, open: () -> Unit) {
+    Panel {
+        Text(title, style = UnloopType.bodyStrong, color = Unloop.colors.ink)
+        Steps(steps)
+        PrimaryButton("Открыть", onClick = open, modifier = Modifier.fillMaxWidth(), small = true)
+    }
 }
 
 @Composable

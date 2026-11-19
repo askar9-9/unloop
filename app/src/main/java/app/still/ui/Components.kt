@@ -27,25 +27,23 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TooltipBox
-import androidx.compose.material3.TooltipDefaults
-import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.produceState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -201,12 +199,15 @@ fun AppIcon(packageName: String, label: String, size: Dp = 40.dp) {
     val c = Unloop.colors
     val context = LocalContext.current
     val px = with(LocalDensity.current) { size.roundToPx() }
-    val icon by produceState(IconCache.bitmaps[packageName], packageName) {
-        if (packageName in IconCache.bitmaps) return@produceState
-        value = withContext(Dispatchers.IO) {
+    val cacheKey = "$packageName@$px"
+    // State is keyed by the package: a row reused for another app must not keep the previous app's icon.
+    var icon by remember(cacheKey) { mutableStateOf(IconCache.bitmaps[cacheKey]) }
+    LaunchedEffect(cacheKey) {
+        if (cacheKey in IconCache.bitmaps) return@LaunchedEffect
+        icon = withContext(Dispatchers.IO) {
             runCatching { context.packageManager.getApplicationIcon(packageName).toBitmap(px, px).asImageBitmap() }.getOrNull()
         }
-        IconCache.bitmaps[packageName] = value
+        IconCache.bitmaps[cacheKey] = icon
     }
     icon?.let { Image(it, contentDescription = null, modifier = Modifier.size(size)) } ?: Box(
         Modifier.size(size).clip(RoundedCornerShape(size * 0.3f)).background(c.surfaceRaised), contentAlignment = Alignment.Center,
@@ -220,7 +221,7 @@ fun QuietList(rows: List<UsageRow>) {
     val c = Unloop.colors
     Column(Modifier.fillMaxWidth()) {
         HorizontalDivider(color = c.line)
-        rows.forEach { row ->
+        rows.forEach { row -> key(row.packageName) {
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
@@ -230,7 +231,7 @@ fun QuietList(rows: List<UsageRow>) {
                 Text(row.value, style = UnloopType.body.copy(fontFeatureSettings = "tnum"), color = c.ink2, maxLines = 1)
             }
             HorizontalDivider(color = c.line)
-        }
+        } }
     }
 }
 
@@ -345,44 +346,34 @@ fun TextAction(text: String, onClick: () -> Unit, modifier: Modifier = Modifier,
     ) { Text(text, style = UnloopType.button) }
 }
 
-class DockItem(val label: String, val icon: ImageVector)
+class DockItem(val label: String, val icon: ImageVector, val activeIcon: ImageVector)
 
-/** Floating icon-only navigation. The protection button carries the protection state as a dot, so it is visible from every tab. */
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Full-width bottom bar: icons only, the selected one drawn bolder. The protection button carries
+ * the protection state as a dot, so it is visible from every tab. Names are read out by TalkBack.
+ */
 @Composable
 fun Dock(items: List<DockItem>, selected: Int, protection: ProtectionState, protectionIndex: Int, onSelect: (Int) -> Unit) {
     val c = Unloop.colors
-    Box(
-        Modifier.fillMaxWidth()
-            .background(Brush.verticalGradient(0f to c.bg.copy(alpha = 0f), 0.45f to c.bg))
-            .navigationBarsPadding().padding(top = 28.dp, bottom = 12.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(
-            Modifier.shadow(12.dp, CircleShape, clip = false).clip(CircleShape).background(c.surface)
-                .border(1.dp, c.line, CircleShape).padding(6.dp).selectableGroup(),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
+    Column(Modifier.fillMaxWidth().background(c.bg)) {
+        HorizontalDivider(color = c.line)
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().height(56.dp).selectableGroup()) {
             items.forEachIndexed { index, item ->
                 val active = index == selected
                 val stateText = when (protection) { ProtectionState.On -> "включена"; ProtectionState.Setup -> "требует настройки"; ProtectionState.Off -> "выключена" }
                 val description = if (index == protectionIndex) "${item.label}: $stateText" else item.label
-                TooltipBox(
-                    positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                    tooltip = { PlainTooltip { Text(item.label) } },
-                    state = rememberTooltipState(),
+                Box(
+                    Modifier.weight(1f).fillMaxHeight()
+                        .selectable(selected = active, role = Role.Tab, onClick = { onSelect(index) })
+                        .semantics { contentDescription = description },
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Box(Modifier.size(52.dp)) {
-                        Box(
-                            Modifier.size(52.dp).clip(CircleShape).background(if (active) c.primary else Color.Transparent)
-                                .selectable(selected = active, role = Role.Tab, onClick = { onSelect(index) })
-                                .semantics { contentDescription = description },
-                            contentAlignment = Alignment.Center,
-                        ) { Icon(item.icon, contentDescription = null, tint = if (active) c.onPrimary else c.ink2) }
+                    Box {
+                        Icon(if (active) item.activeIcon else item.icon, contentDescription = null, tint = c.ink, modifier = Modifier.size(27.dp))
                         if (index == protectionIndex && protection != ProtectionState.Off) {
                             Box(
-                                Modifier.align(Alignment.TopEnd).offset(x = 2.dp, y = (-2).dp).size(12.dp)
-                                    .clip(CircleShape).background(c.surface).padding(2.dp)
+                                Modifier.align(Alignment.TopEnd).offset(x = 5.dp, y = (-3).dp).size(11.dp)
+                                    .clip(CircleShape).background(c.bg).padding(2.dp)
                                     .clip(CircleShape).background(if (protection == ProtectionState.On) c.accent else c.warn),
                             )
                         }
