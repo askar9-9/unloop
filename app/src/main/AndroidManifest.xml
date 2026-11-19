@@ -13,7 +13,7 @@
         </intent>
         <package android:name="com.instagram.android" />
         <package android:name="com.google.android.youtube" />
-        <package android:name="com.samsung.android.forest" />
+        <package android:name="com.samsung.android.app.routines" />
         <package android:name="com.google.android.apps.wellbeing" />
     </queries>
     <application android:name=".StillApp" android:allowBackup="false"

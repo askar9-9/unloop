@@ -103,7 +103,7 @@ private class Device(
     val openAccessibility: () -> Unit,
     val openAppInfo: () -> Unit,
     val openInstallSettings: () -> Unit,
-    val openWellbeing: () -> Unit,
+    val openBedtime: () -> Unit,
 )
 
 class MainActivity : ComponentActivity() {
@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
         val device = Device(
             ::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo,
             openInstallSettings = { open(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.fromParts("package", packageName, null))) },
-            openWellbeing = ::openWellbeing,
+            openBedtime = ::openBedtime,
         )
         setContent { UnloopTheme { UnloopScreen(device) } }
     }
@@ -132,9 +132,9 @@ class MainActivity : ComponentActivity() {
             .putExtra(":settings:show_fragment_args", Bundle().apply { putString(":settings:fragment_args_key", name) }))
     }
 
-    /** Samsung's and Google's Digital Wellbeing; without either, Settings lists it at the top level. */
-    private fun openWellbeing() = open(
-        *listOf("com.samsung.android.forest", "com.google.android.apps.wellbeing")
+    /** Samsung keeps bedtime grayscale in Modes and Routines, Google in Digital Wellbeing; Settings lists both at the top level. */
+    private fun openBedtime() = open(
+        *listOf("com.samsung.android.app.routines", "com.google.android.apps.wellbeing")
             .mapNotNull { packageManager.getLaunchIntentForPackage(it) }.toTypedArray(),
     )
 
@@ -244,7 +244,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
                     usageSettings = { device.openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS) })
                 1 -> Protection(settings, state, step, model,
                     next = { if (step == SetupStep.Consent) disclosure = true else continueSetup() }, other = openAccessibility)
-                2 -> Grayscale(device.openSettings, device.openWellbeing)
+                2 -> Grayscale(device.openSettings, device.openBedtime)
             }
             Spacer(Modifier.height(padding.calculateBottomPadding()))
         }
@@ -396,16 +396,24 @@ private fun Protection(
 }
 
 @Composable
-private fun Grayscale(openSettings: (String) -> Unit, openWellbeing: () -> Unit) {
+private fun Grayscale(openSettings: (String) -> Unit, openBedtime: () -> Unit) {
     val c = Unloop.colors
     ScreenTitle("Оттенки серого")
     Panel { GrayscalePreview() }
     // Android lets no app switch grayscale on, so each way opens the screen where the switch lives.
-    GrayscaleWay("Включить сейчас", listOf("Специальные возможности", "Улучшение видимости", "Оттенки серого — включить")) {
-        openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-    }
-    // Opens Digital Wellbeing directly where it has its own screen, otherwise Settings, where it is a top-level item.
-    GrayscaleWay("Каждый вечер", listOf("Цифровое благополучие", "Режим сна", "Оттенки серого — включить"), openWellbeing)
+    // Menu names from Samsung's support pages (One UI) and stock Android; other brands are close to stock.
+    val samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+    GrayscaleWay(
+        "Включить сейчас",
+        if (samsung) listOf("Специальные возможности", "Улучшение отображения", "Цветовая коррекция → Оттенки серого")
+        else listOf("Специальные возможности", "Цвет и движение", "Коррекция цвета → Оттенки серого"),
+    ) { openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) }
+    GrayscaleWay(
+        "Каждый вечер",
+        if (samsung) listOf("Режимы и сценарии", "Сон", "Другие действия → Оттенки серого")
+        else listOf("Цифровое благополучие", "Режим сна", "Оттенки серого — включить"),
+        openBedtime,
+    )
     Text("Нет такого пункта? Наберите «оттенки» в поиске настроек.", style = UnloopType.caption, color = c.ink3)
 }
 

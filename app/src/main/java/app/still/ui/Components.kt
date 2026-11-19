@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -202,14 +203,18 @@ fun AppIcon(packageName: String, label: String, size: Dp = 40.dp) {
     val cacheKey = "$packageName@$px"
     // State is keyed by the package: a row reused for another app must not keep the previous app's icon.
     var icon by remember(cacheKey) { mutableStateOf(IconCache.bitmaps[cacheKey]) }
+    var loaded by remember(cacheKey) { mutableStateOf(cacheKey in IconCache.bitmaps) }
     LaunchedEffect(cacheKey) {
-        if (cacheKey in IconCache.bitmaps) return@LaunchedEffect
+        if (loaded) return@LaunchedEffect
         icon = withContext(Dispatchers.IO) {
             runCatching { context.packageManager.getApplicationIcon(packageName).toBitmap(px, px).asImageBitmap() }.getOrNull()
         }
         IconCache.bitmaps[cacheKey] = icon
+        loaded = true
     }
-    icon?.let { Image(it, contentDescription = null, modifier = Modifier.size(size)) } ?: Box(
+    // Blank while loading, so a letter tile does not flash before the real icon.
+    if (!loaded) Spacer(Modifier.size(size))
+    else icon?.let { Image(it, contentDescription = null, modifier = Modifier.size(size)) } ?: Box(
         Modifier.size(size).clip(RoundedCornerShape(size * 0.3f)).background(c.surfaceRaised), contentAlignment = Alignment.Center,
     ) { Text(label.take(1).uppercase(), style = UnloopType.bodyStrong, color = c.ink) }
 }
