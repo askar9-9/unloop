@@ -1,6 +1,7 @@
 package app.still.ui
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -39,6 +40,8 @@ import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -46,7 +49,9 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -56,7 +61,13 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.graphics.drawable.toBitmap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.unit.sp
 import app.still.core.UsageDay
 import java.time.LocalDate
@@ -135,44 +146,88 @@ fun StatCard(minutes: Long?, meta: String) {
     }
 }
 
+/** Bars are tabs: tapping a day selects it. */
 @Composable
-fun WeekChart(days: List<UsageDay>) {
+fun WeekChart(days: List<UsageDay>, selected: LocalDate, onSelect: (LocalDate) -> Unit) {
     val c = Unloop.colors
     val max = days.maxOfOrNull { it.totalMs }?.coerceAtLeast(1) ?: 1
-    val today = LocalDate.now()
-    val todayDay = days.find { it.date == today }
-    val summary = "Экранное время за 7 дней" + (todayDay?.let { ", сегодня ${duration(it.totalMs)}" } ?: "")
-    Row(Modifier.fillMaxWidth().clearAndSetSemantics { contentDescription = summary }, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         days.forEach { day ->
-            val isToday = day.date == today
-            val labelColor = if (isToday) c.ink else c.ink3
-            val labelStyle = if (isToday) UnloopType.caption.copy(fontWeight = UnloopType.bodyStrong.fontWeight) else UnloopType.caption
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val active = day.date == selected
+            val labelColor = if (active) c.ink else c.ink3
+            val labelStyle = if (active) UnloopType.caption.copy(fontWeight = UnloopType.bodyStrong.fontWeight) else UnloopType.caption
+            Column(
+                Modifier.weight(1f).clip(RoundedCornerShape(8.dp))
+                    .selectable(selected = active, role = Role.Tab, onClick = { onSelect(day.date) })
+                    .clearAndSetSemantics { contentDescription = "${dayTitle(day.date)}, ${duration(day.totalMs)}" },
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Text(shortDuration(day.totalMs), style = labelStyle, color = labelColor, maxLines = 1)
                 Box(Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(6.dp)).background(c.surfaceRaised)) {
                     if (day.totalMs > 0) {
                         Box(
                             Modifier.align(Alignment.BottomCenter).fillMaxWidth()
                                 .fillMaxHeight((day.totalMs.toFloat() / max).coerceIn(0.03f, 1f))
-                                .clip(RoundedCornerShape(6.dp)).background(if (isToday) c.accent else c.ink3),
+                                .clip(RoundedCornerShape(6.dp)).background(if (active) c.accent else c.ink3),
                         )
                     }
                 }
-                Text(day.date.format(DateTimeFormatter.ofPattern("EE", Locale.forLanguageTag("ru"))), style = labelStyle, color = labelColor)
+                Text(day.date.format(DateTimeFormatter.ofPattern("EE", ru)), style = labelStyle, color = labelColor)
             }
         }
     }
 }
 
+private val ru = Locale.forLanguageTag("ru")
+
+/** "Сегодня", "Вчера" or "Пн, 17 ноября". */
+fun dayTitle(date: LocalDate): String = when (date) {
+    LocalDate.now() -> "Сегодня"
+    LocalDate.now().minusDays(1) -> "Вчера"
+    else -> date.format(DateTimeFormatter.ofPattern("EE, d MMMM", ru)).replaceFirstChar { it.uppercase() }
+}
+
+fun dayRange(from: LocalDate, to: LocalDate): String =
+    if (from.month == to.month) "${from.dayOfMonth}–${to.format(DateTimeFormatter.ofPattern("d MMMM", ru))}"
+    else "${from.format(DateTimeFormatter.ofPattern("d MMM", ru))} – ${to.format(DateTimeFormatter.ofPattern("d MMM", ru))}"
+
+private object IconCache {
+    val bitmaps = mutableMapOf<String, ImageBitmap?>()
+}
+
+/** The installed app's own icon; a letter tile when Android hides the app from Unloop. */
 @Composable
-fun QuietList(rows: List<Pair<String, String>>) {
+fun AppIcon(packageName: String, label: String, size: Dp = 40.dp) {
+    val c = Unloop.colors
+    val context = LocalContext.current
+    val px = with(LocalDensity.current) { size.roundToPx() }
+    val icon by produceState(IconCache.bitmaps[packageName], packageName) {
+        if (packageName in IconCache.bitmaps) return@produceState
+        value = withContext(Dispatchers.IO) {
+            runCatching { context.packageManager.getApplicationIcon(packageName).toBitmap(px, px).asImageBitmap() }.getOrNull()
+        }
+        IconCache.bitmaps[packageName] = value
+    }
+    icon?.let { Image(it, contentDescription = null, modifier = Modifier.size(size)) } ?: Box(
+        Modifier.size(size).clip(RoundedCornerShape(size * 0.3f)).background(c.surfaceRaised), contentAlignment = Alignment.Center,
+    ) { Text(label.take(1).uppercase(), style = UnloopType.bodyStrong, color = c.ink) }
+}
+
+class UsageRow(val packageName: String, val label: String, val value: String)
+
+@Composable
+fun QuietList(rows: List<UsageRow>) {
     val c = Unloop.colors
     Column(Modifier.fillMaxWidth()) {
         HorizontalDivider(color = c.line)
-        rows.forEach { (name, value) ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(name, style = UnloopType.body, color = c.ink, modifier = Modifier.weight(1f), maxLines = 2)
-                Text(value, style = UnloopType.body.copy(fontFeatureSettings = "tnum"), color = c.ink2, maxLines = 1)
+        rows.forEach { row ->
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
+            ) {
+                AppIcon(row.packageName, row.label, 32.dp)
+                Text(row.label, style = UnloopType.body, color = c.ink, modifier = Modifier.weight(1f), maxLines = 2)
+                Text(row.value, style = UnloopType.body.copy(fontFeatureSettings = "tnum"), color = c.ink2, maxLines = 1)
             }
             HorizontalDivider(color = c.line)
         }
@@ -197,7 +252,7 @@ fun UnloopSwitch(checked: Boolean, enabled: Boolean = true) {
 @Composable
 fun AppRow(
     name: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit,
-    tile: String? = null, enabled: Boolean = true,
+    packageName: String? = null, enabled: Boolean = true,
 ) {
     val c = Unloop.colors
     Row(
@@ -205,11 +260,7 @@ fun AppRow(
             .padding(horizontal = 20.dp, vertical = 16.dp),
         horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (tile != null) {
-            Box(Modifier.size(40.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceRaised), contentAlignment = Alignment.Center) {
-                Text(tile, style = UnloopType.bodyStrong, color = c.ink)
-            }
-        }
+        packageName?.let { AppIcon(it, name) }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(name, style = UnloopType.bodyStrong, color = c.ink)
             subtitle?.let { Text(it, style = UnloopType.caption, color = c.ink2) }

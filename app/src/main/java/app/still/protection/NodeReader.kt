@@ -17,6 +17,8 @@ object NodeReader {
             result += UiNode(
                 id, node.contentDescription?.toString().orEmpty().take(100),
                 Bounds(rect.left, rect.top, rect.right, rect.bottom), node.isClickable, node.isSelected, ancestors,
+                // equals/hashCode identify the source view and window.
+                node.hashCode(),
             )
             val path = (ancestors + id).takeLast(16)
             for (i in 0 until minOf(node.childCount, 100)) {

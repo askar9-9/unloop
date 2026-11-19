@@ -21,6 +21,8 @@ object UnloopIcons {
             "L19.77 6.36L18.30 8.51A7.2 7.2 0 0 1 18.92 10.02Z",
         circle(12f, 12f, 3f),
     )
+    val Back = icon("Back", "M14.5 6L8.5 12L14.5 18")
+    val Forward = icon("Forward", "M9.5 6L15.5 12L9.5 18")
     val Info = icon("Info", circle(12f, 12f, 9f), "M12 11V16.5", filled = listOf(circle(12f, 7.75f, 0.9f)))
 
     private fun circle(cx: Float, cy: Float, r: Float) = "M${cx - r} ${cy}A$r $r 0 1 0 ${cx + r} ${cy}A$r $r 0 1 0 ${cx - r} ${cy}Z"

@@ -1,8 +1,10 @@
 package app.still
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.content.ActivityNotFoundException
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -11,7 +13,9 @@ import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -27,6 +31,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
@@ -44,13 +50,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import app.still.data.ProtectionSettings
+import app.still.core.Detectors
 import app.still.data.UsageReport
 import app.still.protection.FocusService
 import app.still.protection.LiveStatus
@@ -72,6 +82,10 @@ import app.still.ui.StatusBanner
 import app.still.ui.Steps
 import app.still.ui.TextAction
 import app.still.ui.TopBar
+import app.still.ui.UsageRow
+import app.still.ui.dayRange
+import app.still.ui.dayTitle
+import app.still.update.Release
 import app.still.ui.Unloop
 import app.still.ui.UnloopIcons
 import app.still.ui.UnloopTheme
@@ -88,13 +102,16 @@ private class Device(
     val openSettings: (String) -> Unit,
     val openAccessibility: () -> Unit,
     val openAppInfo: () -> Unit,
+    val openInstallSettings: () -> Unit,
 )
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        val device = Device(::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo)
+        val device = Device(::serviceEnabled, { open(Intent(it)) }, ::openAccessibility, ::openAppInfo) {
+            open(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.fromParts("package", packageName, null)))
+        }
         setContent { UnloopTheme { UnloopScreen(device) } }
     }
 
@@ -141,6 +158,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
     val interruptions by model.interruptions.collectAsStateWithLifecycle()
     val live by ProtectionStatus.live.collectAsStateWithLifecycle()
     val message by model.message.collectAsStateWithLifecycle()
+    val update by model.update.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var enabled by remember { mutableStateOf(false) }
     var opened by rememberSaveable { mutableStateOf(Opened.None) }
@@ -158,6 +176,25 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
             while (true) { enabled = device.serviceEnabled(); model.refresh(); delay(30_000) }
         }
     }
+    val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        model.checkUpdate(quiet = true)
+        // The daily update check can only reach the user through a notification; ask once, then leave it to the button.
+        val prefs = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !prefs.getBoolean("asked_notifications", false)) {
+            prefs.edit { putBoolean("asked_notifications", true) }
+            notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    val checkUpdate = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        model.checkUpdate()
+    }
+    val updateActions = UpdateActions(install = model::installUpdate, allow = { release ->
+        model.update.value = UpdateState.Available(release)
+        device.openInstallSettings()
+    })
     LaunchedEffect(message) {
         message?.let { snackbar.showSnackbar(it); model.message.value = null }
     }
@@ -194,7 +231,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
         ) {
             TopBar(onSettings = { settingsSheet = true })
             when (tab) {
-                0 -> Today(report, loading, interruptions, state, settings, openProtection = { tab = PROTECTION_TAB },
+                0 -> Today(report, loading, interruptions, state, settings, update, updateActions, openProtection = { tab = PROTECTION_TAB },
                     usageSettings = { device.openSettings(Settings.ACTION_USAGE_ACCESS_SETTINGS) })
                 1 -> Protection(settings, state, step, model,
                     next = { if (step == SetupStep.Consent) disclosure = true else continueSetup() }, other = openAccessibility)
@@ -204,7 +241,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
         }
     }
     if (settingsSheet) ModalBottomSheet(onDismissRequest = { settingsSheet = false }, containerColor = c.surface, contentColor = c.ink) {
-        SettingsSheet(enabled, live, settings.consent,
+        SettingsSheet(enabled, live, settings.consent, model.version, update, updateActions, checkUpdate,
             withdraw = { model.withdrawConsent(); settingsSheet = false },
             delete = { settingsSheet = false; deleteDialog = true })
     }
@@ -220,7 +257,7 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
         onDismissRequest = { deleteDialog = false }, containerColor = c.surface, shape = RoundedCornerShape(28.dp),
         titleContentColor = c.ink, textContentColor = c.ink2,
         title = { Text("Удалить историю?", style = UnloopType.headline) },
-        text = { Text("Записи о прерываниях будут удалены. Настройки останутся.", style = UnloopType.body) },
+        text = { Text("Прерывания и история приложений будут удалены. Настройки останутся.", style = UnloopType.body) },
         confirmButton = { TextAction("Удалить", danger = true, onClick = { model.clearHistory(); deleteDialog = false }) },
         dismissButton = { TextAction("Отмена", onClick = { deleteDialog = false }) },
     )
@@ -229,10 +266,13 @@ private fun UnloopScreen(device: Device, model: MainViewModel = viewModel()) {
 @Composable
 private fun Today(
     report: UsageReport?, loading: Boolean, interruptions: Int, state: ProtectionState, settings: ProtectionSettings,
-    openProtection: () -> Unit, usageSettings: () -> Unit,
+    update: UpdateState, updateActions: UpdateActions, openProtection: () -> Unit, usageSettings: () -> Unit,
 ) {
     val c = Unloop.colors
     ScreenTitle("Сегодня")
+    if (update is UpdateState.Available || update is UpdateState.Downloading || update is UpdateState.NeedsPermission) {
+        Panel { UpdateStatus(update, updateActions) }
+    }
     val protectedApps = listOfNotNull("Instagram".takeIf { settings.instagram }, "YouTube".takeIf { settings.youtube }).joinToString(", ")
     StatusBanner(
         state,
@@ -251,10 +291,64 @@ private fun Today(
         PrimaryButton("Разрешить", onClick = usageSettings, small = true)
     }
     report?.error?.let { Panel { Text(it, style = UnloopType.body, color = c.ink2) } }
-    if (report != null && granted) {
-        if (report.days.isNotEmpty()) Panel { WeekChart(report.days) }
-        val apps = today?.apps.orEmpty().entries.sortedByDescending { it.value }.take(8)
-        if (apps.isNotEmpty()) QuietList(apps.map { (pkg, time) -> (report.labels[pkg] ?: pkg) to duration(time) })
+    if (report != null && granted && report.days.isNotEmpty()) History(report)
+}
+
+/** Rolling weeks back to what Unloop has stored; tap a bar to see that day's apps. */
+@Composable
+private fun History(report: UsageReport) {
+    val c = Unloop.colors
+    val days = report.days
+    var week by rememberSaveable { mutableIntStateOf(0) }
+    var selected by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
+    val end = days.size - 7 * week
+    val window = days.subList(maxOf(0, end - 7), end)
+    val older = days.subList(0, maxOf(0, end - 7)).any { it.totalMs > 0 }
+    val day = days.find { it.date.toString() == selected } ?: days.last()
+    Panel {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { week++; selected = days[end - 8].date.toString() }, enabled = older) {
+                Icon(UnloopIcons.Back, contentDescription = "Предыдущая неделя", tint = if (older) c.ink else c.line)
+            }
+            Text(dayRange(window.first().date, window.last().date), style = UnloopType.bodyStrong, color = c.ink,
+                textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+            IconButton(onClick = { week--; selected = days[end + 6].date.toString() }, enabled = week > 0) {
+                Icon(UnloopIcons.Forward, contentDescription = "Следующая неделя", tint = if (week > 0) c.ink else c.line)
+            }
+        }
+        WeekChart(window, day.date) { selected = it.toString() }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(dayTitle(day.date), style = UnloopType.headline, color = c.ink)
+        Text(duration(day.totalMs), style = UnloopType.body, color = c.ink2)
+    }
+    val apps = day.apps.entries.sortedByDescending { it.value }.take(10)
+    if (apps.isEmpty()) Text("Нет данных за этот день", style = UnloopType.body, color = c.ink2)
+    else QuietList(apps.map { (pkg, time) -> UsageRow(pkg, report.labels[pkg] ?: pkg, duration(time)) })
+}
+
+private class UpdateActions(val install: (Release) -> Unit, val allow: (Release) -> Unit)
+
+@Composable
+private fun UpdateStatus(update: UpdateState, actions: UpdateActions) {
+    val c = Unloop.colors
+    when (update) {
+        is UpdateState.Available -> Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Доступна версия ${update.release.version}", style = UnloopType.bodyStrong, color = c.ink, modifier = Modifier.weight(1f))
+            PrimaryButton("Обновить", onClick = { actions.install(update.release) }, small = true)
+        }
+        is UpdateState.NeedsPermission -> {
+            Text("Разрешите Unloop устанавливать обновления", style = UnloopType.bodyStrong, color = c.ink)
+            PrimaryButton("Разрешить", onClick = { actions.allow(update.release) }, small = true)
+        }
+        is UpdateState.Downloading -> {
+            Text("Скачиваем ${update.release.version}…", style = UnloopType.bodyStrong, color = c.ink)
+            LinearProgressIndicator({ update.progress }, Modifier.fillMaxWidth(), color = c.accent, trackColor = c.surfaceRaised)
+        }
+        UpdateState.Checking -> Text("Проверяем…", style = UnloopType.body, color = c.ink2)
+        UpdateState.Latest -> Text("Установлена последняя версия", style = UnloopType.body, color = c.ink2)
+        is UpdateState.Failed -> Text(update.reason, style = UnloopType.body, color = c.danger)
+        UpdateState.Idle -> Unit
     }
 }
 
@@ -285,9 +379,9 @@ private fun Protection(
     } else StatusBanner(state)
     CardList { AppRow("Защита ленты", null, settings.enabled, model::enable) }
     CardList {
-        AppRow("Instagram", "Reels", settings.instagram, model::instagram, tile = "Ig", enabled = settings.enabled)
+        AppRow("Instagram", "Reels", settings.instagram, model::instagram, packageName = Detectors.INSTAGRAM, enabled = settings.enabled)
         CardDivider()
-        AppRow("YouTube", "Shorts", settings.youtube, model::youtube, tile = "Yt", enabled = settings.enabled)
+        AppRow("YouTube", "Shorts", settings.youtube, model::youtube, packageName = Detectors.YOUTUBE, enabled = settings.enabled)
     }
     Notice("Один ролик по ссылке можно. Следующий — пауза.")
 }
@@ -302,13 +396,24 @@ private fun Grayscale(openSettings: (String) -> Unit) {
 }
 
 @Composable
-private fun SettingsSheet(enabled: Boolean, live: LiveStatus, consent: Boolean, withdraw: () -> Unit, delete: () -> Unit) {
+private fun SettingsSheet(
+    enabled: Boolean, live: LiveStatus, consent: Boolean, version: String, update: UpdateState, updateActions: UpdateActions,
+    checkUpdate: () -> Unit, withdraw: () -> Unit, delete: () -> Unit,
+) {
     val c = Unloop.colors
     Column(
         Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         Text("Настройки", style = UnloopType.headline, color = c.ink)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Версия $version", style = UnloopType.bodyStrong, color = c.ink)
+            Text("Новые версии проверяются раз в день.", style = UnloopType.caption, color = c.ink3)
+            UpdateStatus(update, updateActions)
+            if (update !is UpdateState.Available && update !is UpdateState.NeedsPermission && update !is UpdateState.Downloading) {
+                TextAction("Проверить обновления", onClick = checkUpdate, enabled = update != UpdateState.Checking)
+            }
+        }
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(if (!enabled) "Сервис выключен" else live.note, style = UnloopType.body, color = c.ink2)
             Text(

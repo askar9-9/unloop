@@ -11,15 +11,26 @@ data class UiNode(
     val clickable: Boolean = false,
     val selected: Boolean = false,
     val ancestors: List<String> = emptyList(),
+    /** Identity of the underlying view, stable while the same view stays on screen. */
+    val key: Int = 0,
 )
-data class Detection(val viewer: Boolean, val comments: Boolean, val masks: List<Bounds>, val pagerIds: Set<String>)
+/**
+ * [page] is the key of the settled, fully visible video page view; null mid-swipe or when unknown.
+ * [title] is a hash of that page's title label, null until YouTube has drawn it.
+ */
+data class Detection(
+    val viewer: Boolean, val comments: Boolean, val masks: List<Bounds>, val pagerIds: Set<String>,
+    val page: Int? = null, val title: Int? = null,
+)
 
 /** Conservative, version-dependent signatures. These are candidates, not device-verified fixtures. */
 object Detectors {
     const val INSTAGRAM = "com.instagram.android"
     const val YOUTUBE = "com.google.android.youtube"
     val packages = setOf(INSTAGRAM, YOUTUBE)
-    private data class Profile(val pagers: Set<String>, val tabs: Set<String>, val labels: Set<String>)
+    private data class Profile(val pagers: Set<String>, val tabs: Set<String>, val labels: Set<String>,
+        val pages: Set<String> = emptySet(),
+    )
     private val profiles = mapOf(
         INSTAGRAM to Profile(
             setOf("clips_viewer_view_pager", "clips_viewer_viewpager", "clips_viewer_recycler_view"),
@@ -28,6 +39,9 @@ object Detectors {
         YOUTUBE to Profile(
             setOf("reel_recycler", "reel_watch_fragment_root"),
             setOf("shorts_tab"), setOf("shorts"),
+            // YouTube 21.x sends no scroll events in Shorts; a swipe shows up as a different page view.
+            // It may also reuse the same page view and only swap its content, so the title area is part of the identity.
+            setOf("reel_player_page_container"),
         ),
     )
     fun localId(id: String) = id.substringAfterLast('/')
@@ -54,7 +68,21 @@ object Detectors {
             }
             inNavigation && (knownId || (node.clickable && label in profile.labels && navigationAncestor))
         }.map { it.bounds }.distinct()
-        return Detection(viewer, comments, masks, pagerNodes.map { localId(it.id) }.toSet())
+        val page = if (!viewer) null else nodes.singleOrNull {
+            val b = it.bounds
+            localId(it.id) in profile.pages && b.height > screen.height * 0.55 && b.top >= screen.top && b.bottom <= screen.bottom
+        }
+        // Longest label in the page's bottom-left corner, left of the counters column and narrower than the time bar:
+        // the title, or the channel when there is none. Found by position because Android hides the footer
+        // container from accessibility services. Only its hash is kept.
+        val title = page?.bounds?.let { p ->
+            nodes.filter { n ->
+                val b = n.bounds
+                n.description.isNotBlank() && b.top >= p.top + p.height * 3 / 4 && b.bottom <= p.bottom &&
+                    b.left < p.left + p.width * 4 / 5 && b.right <= p.left + p.width * 9 / 10
+            }.maxByOrNull { it.description.length }?.description?.hashCode()
+        }
+        return Detection(viewer, comments, masks, pagerNodes.map { localId(it.id) }.toSet(), page?.key, title)
     }
 }
 
@@ -67,13 +95,28 @@ class ScrollGuard {
     private var session: String? = null
     private var enteredAt = 0L
     private var blocked = false
+    private var firstPage: Int? = null
+    private var firstTitle: Int? = null
     var sessionToken: Long = 0
         private set
 
-    fun reset() { session = null; blocked = false; sessionToken++ }
+    fun reset() { session = null; blocked = false; firstPage = null; firstTitle = null; sessionToken++ }
     fun update(packageName: String, detection: Detection, now: Long) {
         if (!detection.viewer) { reset(); return }
-        if (session != packageName) { session = packageName; enteredAt = now; blocked = false; sessionToken++ }
+        if (session != packageName) { session = packageName; enteredAt = now; blocked = false; firstPage = null; firstTitle = null; sessionToken++ }
+        val page = detection.page ?: return
+        // The player may rebind its first page while it initializes, and draws the title whenever it is ready.
+        if (firstPage == null || now - enteredAt < 700) { firstPage = page; firstTitle = detection.title }
+        else if (page == firstPage && firstTitle == null) firstTitle = detection.title
+    }
+    fun pageChanged(detection: Detection, now: Long): Boolean {
+        if (session == null || blocked || !detection.viewer || detection.comments || now - enteredAt < 700) return false
+        val first = firstPage ?: return false
+        val current = detection.page ?: return false
+        val otherTitle = firstTitle != null && detection.title != null && detection.title != firstTitle
+        if (current == first && !otherTitle) return false
+        blocked = true
+        return true
     }
     fun shouldExit(detection: Detection, signal: ScrollSignal, now: Long): Boolean {
         if (session == null || blocked || !detection.viewer || detection.comments || now - enteredAt < 700) return false

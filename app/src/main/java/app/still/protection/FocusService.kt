@@ -106,6 +106,7 @@ class FocusService : AccessibilityService() {
             val screen = Bounds(screenRect.left, screenRect.top, screenRect.right, screenRect.bottom)
             val detection = Detectors.detect(pkg, NodeReader.snapshot(root), screen)
             guard.update(pkg, detection, lastScan)
+            if (guard.pageChanged(detection, lastScan)) exitViewer(pkg)
             val applied = masks.sync(detection.masks)
             ProtectionStatus.live.value = LiveStatus(
                 connected = true, packageName = pkg, masks = if (applied) detection.masks.size else 0, viewer = detection.viewer,
